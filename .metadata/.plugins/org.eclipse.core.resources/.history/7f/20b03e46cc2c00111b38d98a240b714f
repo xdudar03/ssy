@@ -1,0 +1,35 @@
+/*
+ * mqtt_client.c
+ *
+ *  Created on: 31. 3. 2026
+ *      Author: Student
+ */
+
+
+#include "mqtt_client.h"
+#include "lwip.h"
+#include "lwip/timeouts.h"
+#include "lwip/netif.h"
+#include "lwip/ip4_addr.h"
+#include "ethernetif.h"
+#include "lwip/apps/mqtt.h"
+
+#include "main.h"     // HAL_GetTick(), LED pin definitions...
+#include <string.h>
+#include <stdio.h>
+
+#define MQTT_BROKER_IP   "192.168.53.15"
+#define MQTT_BROKER_PORT 1883
+#define MQTT_CLIENT_ID   "stm32-client-1"
+#define MQTT_KEEPALIVE_S           30U
+
+#define MQTT_TOPIC_PUB   "stm32/test/pub"
+#define MQTT_TOPIC_SUB   "stm32/test/sub"
+
+#define MQTT_RECONNECT_MS          5000U
+#define MQTT_RX_TOPIC_MAX          64U
+#define MQTT_RX_PAYLOAD_MAX        256U
+#define MQTT_TX_TOPIC_MAX          64U
+#define MQTT_TX_PAYLOAD_MAX        128U
+
+extern struct netif gnetif;

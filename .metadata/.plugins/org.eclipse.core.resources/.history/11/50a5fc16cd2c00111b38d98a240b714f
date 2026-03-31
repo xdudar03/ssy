@@ -1,0 +1,18 @@
+/*
+ * mqtt_client.h
+ *
+ *  Created on: 31. 3. 2026
+ *      Author: Student
+ */
+
+#ifndef INC_MQTT_CLIENT_H_
+#define INC_MQTT_CLIENT_H_
+
+
+#include "lwip/netif.h"
+
+void mqtt_app_init(struct netif *netif);
+void mqtt_app_process(void);
+unsigned char mqtt_app_is_connected(void);
+
+#endif /* INC_MQTT_CLIENT_H_ */

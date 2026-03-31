@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<section name="Workbench">
+	<item key="hasShownOverlayPopupBefore" value="true"/>
+	<item key="replaceBarOpen" value="false"/>
+	<list key="searchhistory">
+		<item value="netif"/>
+		<item value="set"/>
+		<item value="putchar"/>
+		<item value="putch"/>
+		<item value="HAL_TIM_OC_DelayElapsedCallback"/>
+		<item value="BSRR"/>
+		<item value="HAL_GPIO_EXTI_Callback"/>
+		<item value="HAL_UART_RxCpltCallback"/>
+		<item value="tim"/>
+		<item value="echo"/>
+		<item value="strtok"/>
+		<item value="CLI_RX_GetChar"/>
+		<item value="CLI_ShowHelp"/>
+		<item value="CLI_UART_Printf"/>
+		<item value="define"/>
+	</list>
+</section>

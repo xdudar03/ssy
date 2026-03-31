@@ -1,0 +1,4 @@
+../Core/Src/cv2.c:11:6:LED_init	16	static
+../Core/Src/cv2.c:19:6:LED_ON	16	static
+../Core/Src/cv2.c:24:6:LED_OFF	16	static
+../Core/Src/cv2.c:29:6:USER_button	16	static
