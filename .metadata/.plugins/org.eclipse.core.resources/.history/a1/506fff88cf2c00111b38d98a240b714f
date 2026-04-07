@@ -1,0 +1,391 @@
+/*
+ * mqtt_client.c
+ *
+ *  Created on: 31. 3. 2026
+ *      Author: Student
+ */
+
+
+#include "mqtt_client.h"
+#include "lwip.h"
+#include "lwip/timeouts.h"
+#include "lwip/netif.h"
+#include "lwip/ip4_addr.h"
+#include "ethernetif.h"
+#include "lwip/apps/mqtt.h"
+
+#include "main.h"     // HAL_GetTick(), LED pin definitions...
+#include <string.h>
+#include <stdio.h>
+
+#define MQTT_BROKER_IP   "192.168.53.15"
+#define MQTT_BROKER_PORT 1883
+#define MQTT_CLIENT_ID   "stm32-client-1"
+#define MQTT_KEEPALIVE_S           30U
+
+#define MQTT_TOPIC_PUB   "stm32/test/pub"
+#define MQTT_TOPIC_SUB   "stm32/test/sub"
+
+#define MQTT_RECONNECT_MS          5000U
+#define MQTT_RX_TOPIC_MAX          64U
+#define MQTT_RX_PAYLOAD_MAX        256U
+#define MQTT_TX_TOPIC_MAX          64U
+#define MQTT_TX_PAYLOAD_MAX        128U
+
+extern struct netif gnetif;
+
+typedef struct
+{
+    mqtt_client_t *client;
+    struct mqtt_connect_client_info_t ci;
+
+    ip_addr_t broker_ip;
+    u16_t broker_port;
+
+    uint8_t run;
+    uint8_t connect_in_progress;
+    uint8_t connected;
+    uint8_t subscribed;
+
+    uint32_t last_connect_try_ms;
+
+    char rx_topic[MQTT_RX_TOPIC_MAX];
+    uint8_t rx_buf[MQTT_RX_PAYLOAD_MAX];
+    u16_t rx_len;
+    u32_t rx_total_len;
+    uint8_t rx_ready;
+    uint8_t rx_overflow;
+
+    char tx_topic[MQTT_TX_TOPIC_MAX];
+    uint8_t tx_buf[MQTT_TX_PAYLOAD_MAX];
+    u16_t tx_len;
+    uint8_t publish_pending;
+    uint8_t publish_in_flight;
+} mqtt_app_t;
+
+static mqtt_app_t g_mqtt;
+
+static void mqtt_app_reset_runtime(mqtt_app_t *m);
+static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status);
+static void mqtt_request_cb(void *arg, err_t err);
+static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len);
+static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags);
+static void mqtt_try_connect(mqtt_app_t *m);
+static void mqtt_try_subscribe(mqtt_app_t *m);
+static void mqtt_try_publish(mqtt_app_t *m);
+
+void mqtt_app_init(struct netif *netif)
+{
+    memset(&g_mqtt, 0, sizeof(g_mqtt));
+    g_netif = netif;
+
+    g_mqtt.client = mqtt_client_new();
+    g_mqtt.broker_port = MQTT_BROKER_PORT_DEF;
+
+    ipaddr_aton(MQTT_BROKER_IP_STR, &g_mqtt.broker_ip);
+
+    memset(&g_mqtt.ci, 0, sizeof(g_mqtt.ci));
+    g_mqtt.ci.client_id = MQTT_CLIENT_ID;
+    g_mqtt.ci.keep_alive = MQTT_KEEPALIVE_S;
+    g_mqtt.ci.client_user = NULL;
+    g_mqtt.ci.client_pass = NULL;
+
+    mqtt_app_reset_runtime(&g_mqtt);
+}
+
+void mqtt_app_start(void)
+{
+    g_mqtt.run = 1;
+}
+
+void mqtt_app_stop(void)
+{
+    g_mqtt.run = 0;
+
+    if (g_mqtt.client != NULL && mqtt_client_is_connected(g_mqtt.client)) {
+        mqtt_disconnect(g_mqtt.client);
+    }
+
+    mqtt_app_reset_runtime(&g_mqtt);
+}
+
+static void mqtt_app_reset_runtime(mqtt_app_t *m)
+{
+    m->connect_in_progress = 0;
+    m->connected = 0;
+    m->subscribed = 0;
+
+    m->rx_topic[0] = '\0';
+    m->rx_len = 0;
+    m->rx_ready = 0;
+
+    m->tx_topic[0] = '\0';
+    m->tx_len = 0;
+    m->publish_pending = 0;
+    m->publish_in_flight = 0;
+}
+
+uint8_t mqtt_app_is_connected(void)
+{
+    return g_mqtt.connected;
+}
+
+uint8_t mqtt_app_is_subscribed(void)
+{
+    return g_mqtt.subscribed;
+}
+
+uint8_t mqtt_app_rx_ready(void)
+{
+    return g_mqtt.rx_ready;
+}
+
+const char *mqtt_app_rx_topic(void)
+{
+    return g_mqtt.rx_topic;
+}
+
+const uint8_t *mqtt_app_rx_data(void)
+{
+    return g_mqtt.rx_buf;
+}
+
+u16_t mqtt_app_rx_len(void)
+{
+    return g_mqtt.rx_len;
+}
+
+void mqtt_app_rx_clear(void)
+{
+    g_mqtt.rx_ready = 0;
+    g_mqtt.rx_len = 0;
+    g_mqtt.rx_topic[0] = '\0';
+}
+
+err_t mqtt_app_publish(const char *topic, const void *payload, u16_t len)
+{
+    if (topic == NULL || payload == NULL) {
+        return ERR_ARG;
+    }
+
+    if (strlen(topic) >= MQTT_TX_TOPIC_MAX) {
+        return ERR_VAL;
+    }
+
+    if (len > MQTT_TX_PAYLOAD_MAX) {
+        return ERR_VAL;
+    }
+
+    if (g_mqtt.publish_pending || g_mqtt.publish_in_flight) {
+        return ERR_INPROGRESS;
+    }
+
+    strcpy(g_mqtt.tx_topic, topic);
+    memcpy(g_mqtt.tx_buf, payload, len);
+    g_mqtt.tx_len = len;
+    g_mqtt.publish_pending = 1;
+
+    return ERR_OK;
+}
+
+static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status)
+{
+    mqtt_app_t *m = (mqtt_app_t *)arg;
+    (void)client;
+
+    m->connect_in_progress = 0;
+
+    if (status == MQTT_CONNECT_ACCEPTED) {
+        m->connected = 1;
+        m->subscribed = 0;
+
+        mqtt_set_inpub_callback(m->client,
+                                mqtt_incoming_publish_cb,
+                                mqtt_incoming_data_cb,
+                                m);
+
+        printf("MQTT connected\r\n");
+    } else {
+        m->connected = 0;
+        m->subscribed = 0;
+        printf("MQTT connect failed, status=%d\r\n", (int)status);
+    }
+}
+
+static void mqtt_request_cb(void *arg, err_t err)
+{
+    mqtt_app_t *m = (mqtt_app_t *)arg;
+
+    if (m->publish_in_flight) {
+        m->publish_in_flight = 0;
+        printf("MQTT publish done, err=%d\r\n", (int)err);
+        return;
+    }
+
+    if (!m->subscribed && err == ERR_OK) {
+        m->subscribed = 1;
+        printf("MQTT subscribed\r\n");
+        return;
+    }
+
+    printf("MQTT request cb, err=%d\r\n", (int)err);
+}
+
+static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len)
+{
+    mqtt_app_t *m = (mqtt_app_t *)arg;
+    size_t topic_len = strlen(topic);
+
+    if (topic_len >= MQTT_RX_TOPIC_MAX) {
+        topic_len = MQTT_RX_TOPIC_MAX - 1;
+    }
+
+    memcpy(m->rx_topic, topic, topic_len);
+    m->rx_topic[topic_len] = '\0';
+
+    m->rx_len = 0;
+    m->rx_ready = 0;
+
+    if (tot_len > MQTT_RX_PAYLOAD_MAX) {
+        printf("MQTT RX payload too large: %lu\r\n", (unsigned long)tot_len);
+    }
+}
+
+static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags)
+{
+    mqtt_app_t *m = (mqtt_app_t *)arg;
+    u16_t copy_len = len;
+
+    if ((u32_t)m->rx_len + copy_len > MQTT_RX_PAYLOAD_MAX) {
+        copy_len = (u16_t)(MQTT_RX_PAYLOAD_MAX - m->rx_len);
+    }
+
+    if (copy_len > 0) {
+        memcpy(&m->rx_buf[m->rx_len], data, copy_len);
+        m->rx_len = (u16_t)(m->rx_len + copy_len);
+    }
+
+    if (flags & MQTT_DATA_FLAG_LAST) {
+        m->rx_ready = 1;
+        printf("MQTT RX complete, topic=%s, len=%u\r\n", m->rx_topic, m->rx_len);
+    }
+}
+
+static void mqtt_try_connect(mqtt_app_t *m)
+{
+    err_t err;
+    uint32_t now = HAL_GetTick();
+
+    if (!m->run) {
+        return;
+    }
+
+    if (g_netif == NULL || g_netif->ip_addr.addr == 0) {
+        return;
+    }
+
+    if (m->client == NULL) {
+        return;
+    }
+
+    if (mqtt_client_is_connected(m->client) || m->connect_in_progress) {
+        return;
+    }
+
+    if ((now - m->last_connect_try_ms) < MQTT_CONNECT_RETRY_MS) {
+        return;
+    }
+
+    m->last_connect_try_ms = now;
+    m->connect_in_progress = 1;
+
+    err = mqtt_client_connect(m->client,
+                              &m->broker_ip,
+                              m->broker_port,
+                              mqtt_connection_cb,
+                              m,
+                              &m->ci);
+
+    if (err != ERR_OK) {
+        m->connect_in_progress = 0;
+        printf("mqtt_client_connect failed immediately: %d\r\n", (int)err);
+    } else {
+        printf("MQTT connect started\r\n");
+    }
+}
+
+static void mqtt_try_subscribe(mqtt_app_t *m)
+{
+    err_t err;
+
+    if (!m->connected || m->subscribed) {
+        return;
+    }
+
+    err = mqtt_subscribe(m->client, MQTT_SUB_TOPIC, 0, mqtt_request_cb, m);
+    if (err != ERR_OK) {
+        printf("mqtt_subscribe failed: %d\r\n", (int)err);
+    } else {
+        printf("MQTT subscribe started\r\n");
+    }
+}
+
+static void mqtt_try_publish(mqtt_app_t *m)
+{
+    err_t err;
+
+    if (!m->connected || !m->subscribed) {
+        return;
+    }
+
+    if (!m->publish_pending || m->publish_in_flight) {
+        return;
+    }
+
+    err = mqtt_publish(m->client,
+                       m->tx_topic,
+                       m->tx_buf,
+                       m->tx_len,
+                       0,
+                       0,
+                       mqtt_request_cb,
+                       m);
+
+    if (err == ERR_OK) {
+        m->publish_pending = 0;
+        m->publish_in_flight = 1;
+        printf("MQTT publish started\r\n");
+    } else {
+        printf("mqtt_publish failed: %d\r\n", (int)err);
+    }
+}
+
+void mqtt_app_process(void)
+{
+    if (!g_mqtt.run) {
+        return;
+    }
+
+    if (g_netif == NULL || g_netif->ip_addr.addr == 0) {
+        g_mqtt.connected = 0;
+        g_mqtt.subscribed = 0;
+        g_mqtt.connect_in_progress = 0;
+        return;
+    }
+
+    if (!mqtt_client_is_connected(g_mqtt.client)) {
+        g_mqtt.connected = 0;
+        g_mqtt.subscribed = 0;
+        mqtt_try_connect(&g_mqtt);
+        return;
+    }
+
+    g_mqtt.connected = 1;
+
+    if (!g_mqtt.subscribed) {
+        mqtt_try_subscribe(&g_mqtt);
+        return;
+    }
+
+    mqtt_try_publish(&g_mqtt);
+}

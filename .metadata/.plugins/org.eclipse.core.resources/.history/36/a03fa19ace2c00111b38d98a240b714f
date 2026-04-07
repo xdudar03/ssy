@@ -1,0 +1,169 @@
+/*
+ * mqtt_client.c
+ *
+ *  Created on: 31. 3. 2026
+ *      Author: Student
+ */
+
+
+#include "mqtt_client.h"
+#include "lwip.h"
+#include "lwip/timeouts.h"
+#include "lwip/netif.h"
+#include "lwip/ip4_addr.h"
+#include "ethernetif.h"
+#include "lwip/apps/mqtt.h"
+
+#include "main.h"     // HAL_GetTick(), LED pin definitions...
+#include <string.h>
+#include <stdio.h>
+
+#define MQTT_BROKER_IP   "192.168.53.15"
+#define MQTT_BROKER_PORT 1883
+#define MQTT_CLIENT_ID   "stm32-client-1"
+#define MQTT_KEEPALIVE_S           30U
+
+#define MQTT_TOPIC_PUB   "stm32/test/pub"
+#define MQTT_TOPIC_SUB   "stm32/test/sub"
+
+#define MQTT_RECONNECT_MS          5000U
+#define MQTT_RX_TOPIC_MAX          64U
+#define MQTT_RX_PAYLOAD_MAX        256U
+#define MQTT_TX_TOPIC_MAX          64U
+#define MQTT_TX_PAYLOAD_MAX        128U
+
+extern struct netif gnetif;
+
+typedef struct
+{
+    mqtt_client_t *client;
+    struct mqtt_connect_client_info_t ci;
+
+    ip_addr_t broker_ip;
+    u16_t broker_port;
+
+    uint8_t run;
+    uint8_t connect_in_progress;
+    uint8_t connected;
+    uint8_t subscribed;
+
+    uint32_t last_connect_try_ms;
+
+    char rx_topic[MQTT_RX_TOPIC_MAX];
+    uint8_t rx_buf[MQTT_RX_PAYLOAD_MAX];
+    u16_t rx_len;
+    u32_t rx_total_len;
+    uint8_t rx_ready;
+    uint8_t rx_overflow;
+
+    char tx_topic[MQTT_TX_TOPIC_MAX];
+    uint8_t tx_buf[MQTT_TX_PAYLOAD_MAX];
+    u16_t tx_len;
+    uint8_t publish_pending;
+    uint8_t publish_in_flight;
+} mqtt_app_t;
+
+static mqtt_app_t g_mqtt;
+
+static void mqtt_request_cb(void *arg, err_t err)
+{
+    printf("MQTT request result: %d\r\n", err);
+}
+
+static void mqtt_incoming_publish_cb(void *arg, const char *topic, u32_t tot_len)
+{
+    printf("MQTT incoming topic: %s, len=%lu\r\n", topic, (unsigned long)tot_len);
+}
+
+static void mqtt_incoming_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags)
+{
+    printf("MQTT data: ");
+    for (u16_t i = 0; i < len; i++) {
+        putchar(data[i]);
+    }
+    printf("\r\n");
+
+    if (flags & MQTT_DATA_FLAG_LAST) {
+        printf("MQTT message complete\r\n");
+    }
+}
+
+static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status)
+{
+    if (status == MQTT_CONNECT_ACCEPTED) {
+        printf("MQTT connected\r\n");
+        mqtt_ready = 1;
+
+        mqtt_set_inpub_callback(client,
+                                mqtt_incoming_publish_cb,
+                                mqtt_incoming_data_cb,
+                                NULL);
+
+        err_t err = mqtt_subscribe(client, MQTT_TOPIC_SUB, 0, mqtt_request_cb, NULL);
+        printf("MQTT subscribe result: %d\r\n", err);
+    } else {
+        printf("MQTT connection failed, status=%d\r\n", status);
+        mqtt_ready = 0;
+        mqtt_connecting = 0;
+    }
+}
+
+static void mqtt_start(void)
+{
+    ip_addr_t broker_ip;
+    static struct mqtt_connect_client_info_t ci;
+
+    if (mqtt_client == NULL) {
+        mqtt_client = mqtt_client_new();
+        if (mqtt_client == NULL) {
+            printf("mqtt_client_new failed\r\n");
+            return;
+        }
+    }
+
+    if (!ipaddr_aton(MQTT_BROKER_IP, &broker_ip)) {
+        printf("Invalid broker IP\r\n");
+        return;
+    }
+
+    memset(&ci, 0, sizeof(ci));
+    ci.client_id = MQTT_CLIENT_ID;
+    ci.keep_alive = MQTT_KEEPALIVE_S;
+    ci.client_user = NULL;      // set if broker requires auth
+    ci.client_pass = NULL;      // set if broker requires auth
+
+    mqtt_connecting = 1;
+
+    err_t err = mqtt_client_connect(mqtt_client,
+                                    &broker_ip,
+                                    MQTT_BROKER_PORT,
+                                    mqtt_connection_cb,
+                                    NULL,
+                                    &ci);
+
+    printf("mqtt_client_connect result: %d\r\n", err);
+
+    if (err != ERR_OK) {
+        mqtt_connecting = 0;
+    }
+}
+
+static void mqtt_publish_hello(void)
+{
+    const char *msg = "hello from stm32";
+
+    if (!mqtt_ready || mqtt_client == NULL) {
+        return;
+    }
+
+    err_t err = mqtt_publish(mqtt_client,
+                             MQTT_TOPIC_PUB,
+                             msg,
+                             (u16_t)strlen(msg),
+                             0,   // QoS
+                             0,   // retain
+                             mqtt_request_cb,
+                             NULL);
+
+    printf("mqtt_publish result: %d\r\n", err);
+}

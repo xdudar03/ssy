@@ -1,0 +1,4 @@
+../Core/Src/cv2.c:11:6:LED_init	1
+../Core/Src/cv2.c:19:6:LED_ON	1
+../Core/Src/cv2.c:24:6:LED_OFF	1
+../Core/Src/cv2.c:29:6:USER_button	1
