@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "i2c.h"
 #include "lwip.h"
 #include "usart.h"
 #include "usb_otg.h"
@@ -35,6 +36,7 @@
 #include "lwip/dhcp.h"
 #include "lwip/ip_addr.h"
 #include "mqtt_client.h"
+#include "bmp180.h"
 
 
 /* USER CODE END Includes */
@@ -109,14 +111,34 @@ int main(void)
   MX_USART3_UART_Init();
   MX_USB_OTG_FS_PCD_Init();
   MX_LWIP_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
   mqtt_app_init(&gnetif);
   mqtt_app_start();
 
-  HAL_Delay(500);
-//  dhcp_start(&gnetif); // starts DHCP client
-
   setvbuf(stdout, NULL, _IONBF, 0);
+
+//  dhcp_start(&gnetif); // starts DHCP client
+//  for (uint16_t addr = 1; addr < 128; addr++) {
+//      if (HAL_I2C_IsDeviceReady(&hi2c1, addr << 1, 2, 100) == HAL_OK) {
+//          printf("I2C device found at 0x%02X\r\n", addr);
+//      }
+//  }
+//
+//  uint8_t reg = 0xD0;
+//  uint8_t chip_id = 0;
+//
+//  HAL_I2C_Master_Transmit(&hi2c1, BMP180_I2C_ADDR << 1, &reg, 1, 100);
+//  HAL_I2C_Master_Receive(&hi2c1, BMP180_I2C_ADDR << 1, &chip_id, 1, 100);
+//
+//  printf("BMP180 chip id: 0x%02X\r\n", chip_id);
+
+  /* Initializes BMP180 sensor and oversampling settings. */
+  BMP180_Init(&hi2c1);
+  BMP180_SetOversampling(BMP180_ULTRA);
+  /* Update calibration data. Must be called once before entering main loop. */
+  BMP180_UpdateCalibrationData();
+
 
   /* USER CODE END 2 */
 
@@ -127,16 +149,40 @@ int main(void)
 	  MX_LWIP_Process();
 	  mqtt_app_process();
 
+//	  static uint32_t last_log = 0;
+//	    uint32_t now = HAL_GetTick();
+//
+//	    if ((now - last_log) >= 1000U) {
+//	        last_log = now;
+//	        printf("IP: %s\r\n", ipaddr_ntoa(&gnetif.ip_addr));
+//	    }
+
 	  if (gnetif.ip_addr.addr != 0) {
+//		  printf("IP address is assigned");
 		  static uint32_t last_pub = 0;
 
 		  if (mqtt_app_is_connected()) {
 			  uint32_t now = HAL_GetTick();
 			  if ((now - last_pub) >= 5000U) {
 				  last_pub = now;
-				  const char msg[] = "hello from stm32";
-				  mqtt_app_publish("SSY/status", msg, sizeof(msg) - 1);
-			  }
+				  /* Reads temperature. */
+
+				  int32_t  temperature = BMP180_GetTemperature();
+				  int32_t pressure = BMP180_GetPressure();
+
+				  char payload[128];
+				  int len = snprintf(payload, sizeof(payload),
+				                     "{\"temp_c10\":%ld,\"pressure_pa\":%ld}",
+				                     (long)temperature,
+				                     (long)pressure);
+
+				  if (len > 0 && len < (int)sizeof(payload)) {
+				      err_t err = mqtt_app_publish("SSY/bmp180", payload, (u16_t)len);
+				      printf("publish err=%d payload=%s\r\n", (int)err, payload);
+				  } else {
+				      printf("snprintf failed, len=%d\r\n", len);
+				  }
+			 }
 		  }
 
 		  if (mqtt_app_rx_ready()) {
@@ -144,6 +190,7 @@ int main(void)
 			  mqtt_app_rx_clear();
 		  }
 	  }
+
 
 //	  HAL_Delay(1000);
     /* USER CODE END WHILE */
