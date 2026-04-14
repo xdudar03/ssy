@@ -18,8 +18,10 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "i2c.h"
 #include "lwip.h"
+#include "spi.h"
 #include "usart.h"
 #include "usb_otg.h"
 #include "gpio.h"
@@ -112,6 +114,8 @@ int main(void)
   MX_USB_OTG_FS_PCD_Init();
   MX_LWIP_Init();
   MX_I2C1_Init();
+  MX_ADC1_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   mqtt_app_init(&gnetif);
   mqtt_app_start();
@@ -139,7 +143,6 @@ int main(void)
   /* Update calibration data. Must be called once before entering main loop. */
   BMP180_UpdateCalibrationData();
 
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -160,14 +163,16 @@ int main(void)
 	  if (gnetif.ip_addr.addr != 0) {
 //		  printf("IP address is assigned");
 		  static uint32_t last_pub = 0;
+		  static uint32_t last_ir_log = 0;
 
 		  if (mqtt_app_is_connected()) {
 			  uint32_t now = HAL_GetTick();
+
 			  if ((now - last_pub) >= 5000U) {
 				  last_pub = now;
 				  /* Reads temperature. */
 
-				  int32_t  temperature = BMP180_GetTemperature();
+				  int32_t temperature = BMP180_GetTemperature();
 				  int32_t pressure = BMP180_GetPressure();
 
 				  char payload[128];
@@ -183,6 +188,30 @@ int main(void)
 				      printf("snprintf failed, len=%d\r\n", len);
 				  }
 			 }
+			  if ((now - last_ir_log) >= 500U) {
+			      last_ir_log = now;
+			      /* IR sensor */
+			      HAL_ADC_Start(&hadc1);
+			      HAL_ADC_PollForConversion(&hadc1, 100);
+			      // PC3
+			      uint32_t adc = HAL_ADC_GetValue(&hadc1);
+			      HAL_ADC_Stop(&hadc1);
+			      // PA6
+			      GPIO_PinState state = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_6);
+
+			      char payload[128];
+			      int len = snprintf(payload, sizeof(payload),
+			    		  	  	  	  "{\"detected\":%d,\"adc\":%lu}",
+									  (state == GPIO_PIN_SET) ? 1 : 0, adc);
+
+			      if (len > 0 && len < (int)sizeof(payload)) {
+					  err_t err = mqtt_app_publish("SSY/ir", payload, (u16_t)len);
+					  printf("publish err=%d payload=%s\r\n", (int)err, payload);
+				  } else {
+					  printf("snprintf failed, len=%d\r\n", len);
+				  }
+//			      printf("IR ADC=%lu DOUT=%d\r\n", adc, (state == GPIO_PIN_SET) ? 1 : 0);
+			  }
 		  }
 
 		  if (mqtt_app_rx_ready()) {
