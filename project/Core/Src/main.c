@@ -39,6 +39,8 @@
 #include "lwip/ip_addr.h"
 #include "mqtt_client.h"
 #include "bmp180.h"
+#include "ili9341.h"
+#include "fonts.h"
 
 
 /* USER CODE END Includes */
@@ -147,10 +149,35 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  printf("ILI9341 init\r\n");
+  ILI9341_Init();
+
+
   while (1)
   {
+	  ILI9341_FillScreen(ILI9341_BLACK);
+
+	  ILI9341_WriteString(
+		  10,
+		  10,
+		  "Hello STM32",
+		  Font_11x18,
+		  ILI9341_WHITE,
+		  ILI9341_BLACK
+	  );
+
+	  ILI9341_WriteString(
+		  10,
+		  35,
+		  "ILI9341 works",
+		  Font_7x10,
+		  ILI9341_YELLOW,
+		  ILI9341_BLACK
+	  );
+
 	  MX_LWIP_Process();
 	  mqtt_app_process();
+
 
 //	  static uint32_t last_log = 0;
 //	    uint32_t now = HAL_GetTick();
