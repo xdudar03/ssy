@@ -41,6 +41,7 @@
 #include "bmp180.h"
 #include "ili9341.h"
 #include "fonts.h"
+#include "st7735.h"
 
 
 /* USER CODE END Includes */
@@ -149,43 +150,43 @@ int main(void)
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  printf("ILI9341 init\r\n");
-  ILI9341_Init();
+//  printf("ILI9341 init\r\n");
 
+    ILI9341_Init();
+
+    ILI9341_FillScreen(ILI9341_WHITE);
+
+    ILI9341_DrawPixel(0, 0, ILI9341_RED);
+    ILI9341_DrawPixel(239, 0, ILI9341_GREEN);
+    ILI9341_DrawPixel(0, 319, ILI9341_BLUE);
+    ILI9341_DrawPixel(239, 319, ILI9341_BLACK);
+
+    ILI9341_FillRectangle(10, 10, 40, 40, ILI9341_RED);
+    ILI9341_FillRectangle(60, 10, 40, 40, ILI9341_GREEN);
+    ILI9341_FillRectangle(110, 10, 40, 40, ILI9341_BLUE);
 
   while (1)
   {
-	  ILI9341_FillScreen(ILI9341_BLACK);
-
-	  ILI9341_WriteString(
-		  10,
-		  10,
-		  "Hello STM32",
-		  Font_11x18,
-		  ILI9341_WHITE,
-		  ILI9341_BLACK
-	  );
-
-	  ILI9341_WriteString(
-		  10,
-		  35,
-		  "ILI9341 works",
-		  Font_7x10,
-		  ILI9341_YELLOW,
-		  ILI9341_BLACK
-	  );
-
 	  MX_LWIP_Process();
 	  mqtt_app_process();
 
+	  uint32_t now = HAL_GetTick();
 
-//	  static uint32_t last_log = 0;
-//	    uint32_t now = HAL_GetTick();
+	  static uint32_t last_log = 0;
+	  if ((now - last_log) >= 1000U) {
+		  last_log = now;
+		  printf("IP: %s\r\n", ipaddr_ntoa(&gnetif.ip_addr));
+	  }
+
+//	  static uint32_t last_display = 0;
+//	  if ((now - last_display) >= 1000U) {
+//		  last_display = now;
 //
-//	    if ((now - last_log) >= 1000U) {
-//	        last_log = now;
-//	        printf("IP: %s\r\n", ipaddr_ntoa(&gnetif.ip_addr));
-//	    }
+//		  ILI9341_FillRectangle(0, 0, 20, 20, ILI9341_WHITE);
+//		  ILI9341_WriteString(10, 10, "Hello STM32", Font_11x18, ILI9341_WHITE, ILI9341_BLACK);
+//		  ILI9341_WriteString(10, 35, "ILI9341 works", Font_7x10, ILI9341_YELLOW, ILI9341_BLACK);
+//		  ILI9341_DrawPixel(10, 10, ILI9341_WHITE);
+//	  }
 
 	  if (gnetif.ip_addr.addr != 0) {
 //		  printf("IP address is assigned");
