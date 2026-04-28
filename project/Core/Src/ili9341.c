@@ -1,254 +1,368 @@
-// https://github.com/afiskon/stm32-ili9341
-#include "stm32f4xx_hal.h"
+/*
+ * ili9341.c
+ *
+ *  Created on: Nov 28, 2019
+ *      Author: andrew
+ */
+
+// ----------------------------------------------------------------- includes --
+
+#include <stdlib.h> // malloc()
+#include <string.h> // memset()
+#include <ctype.h>
+
 #include "ili9341.h"
-#include "putchar.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include "ili9341_gfx.h"
+#include "ili9341_font.h"
 
-static void ILI9341_Select() {
-    HAL_GPIO_WritePin(ILI9341_CS_GPIO_Port, ILI9341_CS_Pin, GPIO_PIN_RESET);
-}
+// ---------------------------------------------------------- private defines --
 
-void ILI9341_Unselect() {
-    HAL_GPIO_WritePin(ILI9341_CS_GPIO_Port, ILI9341_CS_Pin, GPIO_PIN_SET);
-}
+#define __ILI9341_TOUCH_NORM_SAMPLES__ 8U
 
-static void ILI9341_Reset() {
-    HAL_GPIO_WritePin(ILI9341_RST_GPIO_Port, ILI9341_RST_Pin, GPIO_PIN_RESET);
-    HAL_Delay(5);
-    HAL_GPIO_WritePin(ILI9341_RST_GPIO_Port, ILI9341_RST_Pin, GPIO_PIN_SET);
-}
+// ----------------------------------------------------------- private macros --
 
-static void ILI9341_WriteCommand(uint8_t cmd) {
-    HAL_GPIO_WritePin(ILI9341_DC_GPIO_Port, ILI9341_DC_Pin, GPIO_PIN_RESET);
-    HAL_StatusTypeDef st = HAL_SPI_Transmit(&ILI9341_SPI_PORT,  &cmd, sizeof(cmd), 1000);
-    if (st != HAL_OK) {
-        printf("SPI TX error: %d\r\n", st);
-    }
-}
+#define __IS_SPI_SLAVE(s) (((s) > issNONE) && ((s) < issCOUNT))
 
-static void ILI9341_WriteData(uint8_t* buff, size_t buff_size) {
-    HAL_GPIO_WritePin(ILI9341_DC_GPIO_Port, ILI9341_DC_Pin, GPIO_PIN_SET);
+#define __SLAVE_SELECT(d, s)  \
+  if (__IS_SPI_SLAVE(s)) { ili9341_spi_slave_select((d), (s)); }
 
-    // split data in small chunks because HAL can't send more then 64K at once
-    while(buff_size > 0) {
-        uint16_t chunk_size = buff_size > 32768 ? 32768 : buff_size;
-        HAL_StatusTypeDef st = HAL_SPI_Transmit(&ILI9341_SPI_PORT, buff, chunk_size, 1000);
-        if (st != HAL_OK) {
-            printf("SPI TX error: %d\r\n", st);
+#define __SLAVE_RELEASE(d, s) \
+  if (__IS_SPI_SLAVE(s)) { ili9341_spi_slave_release((d), (s)); }
+
+// ------------------------------------------------------------ private types --
+
+/* nothing */
+
+// ------------------------------------------------------- exported variables --
+
+/* nothing */
+
+// -------------------------------------------------------- private variables --
+
+/* nothing */
+
+// ---------------------------------------------- private function prototypes --
+
+static void ili9341_reset(ili9341_t *lcd);
+static void ili9341_initialize(ili9341_t *lcd);
+static ili9341_two_dimension_t ili9341_screen_size(
+    ili9341_screen_orientation_t orientation);
+static uint8_t ili9341_screen_rotation(
+    ili9341_screen_orientation_t orientation);
+
+// ------------------------------------------------------- exported functions --
+
+ili9341_t *ili9341_new(
+
+    SPI_HandleTypeDef *spi_hal,
+
+    GPIO_TypeDef *reset_port,        uint16_t reset_pin,
+    GPIO_TypeDef *tft_select_port,   uint16_t tft_select_pin,
+    GPIO_TypeDef *data_command_port, uint16_t data_command_pin,
+
+    ili9341_screen_orientation_t orientation,
+
+    GPIO_TypeDef *touch_select_port, uint16_t touch_select_pin,
+    GPIO_TypeDef *touch_irq_port,    uint16_t touch_irq_pin,
+
+    ili9341_touch_support_t   touch_support,
+    ili9341_touch_normalize_t touch_normalize)
+{
+  ili9341_t *lcd = NULL;
+
+  if (NULL != spi_hal) {
+
+    if ( (NULL != reset_port)        && IS_GPIO_PIN(reset_pin)         &&
+         (NULL != tft_select_port)   && IS_GPIO_PIN(tft_select_pin)    &&
+         (NULL != data_command_port) && IS_GPIO_PIN(data_command_pin)  &&
+         (orientation > isoNONE)     && (orientation < isoCOUNT)       ) {
+
+      // we must either NOT support the touch interface, OR we must have valid
+      // touch interface parameters
+      if ( itsSupported != touch_support ||
+           ( (NULL != touch_select_port) && IS_GPIO_PIN(touch_select_pin) &&
+             (NULL != touch_irq_port)    && IS_GPIO_PIN(touch_irq_pin)    )) {
+
+        if (NULL != (lcd = malloc(sizeof(ili9341_t)))) {
+
+          lcd->spi_hal              = spi_hal;
+
+          lcd->reset_port           = reset_port;
+          lcd->reset_pin            = reset_pin;
+          lcd->tft_select_port      = tft_select_port;
+          lcd->tft_select_pin       = tft_select_pin;
+          lcd->data_command_port    = data_command_port;
+          lcd->data_command_pin     = data_command_pin;
+
+          lcd->orientation          = orientation;
+          lcd->screen_size          = ili9341_screen_size(orientation);
+
+          if (touch_support) {
+
+            lcd->touch_select_port    = touch_select_port;
+            lcd->touch_select_pin     = touch_select_pin;
+            lcd->touch_irq_port       = touch_irq_port;
+            lcd->touch_irq_pin        = touch_irq_pin;
+
+            lcd->touch_support        = touch_support;
+            lcd->touch_normalize      = touch_normalize;
+
+          } else {
+
+            lcd->touch_select_port    = NULL;
+            lcd->touch_select_pin     = 0;
+            lcd->touch_irq_port       = NULL;
+            lcd->touch_irq_pin        = 0;
+
+            lcd->touch_support        = touch_support;
+            lcd->touch_normalize      = itnNONE;
+          }
+
+          ili9341_initialize(lcd);
         }
-        buff += chunk_size;
-        buff_size -= chunk_size;
+      }
     }
+  }
+
+  return lcd;
 }
 
-static void ILI9341_SetAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
-    // column address set
-    ILI9341_WriteCommand(0x2A); // CASET
-    {
-        uint8_t data[] = { (x0 >> 8) & 0xFF, x0 & 0xFF, (x1 >> 8) & 0xFF, x1 & 0xFF };
-        ILI9341_WriteData(data, sizeof(data));
-    }
-
-    // row address set
-    ILI9341_WriteCommand(0x2B); // RASET
-    {
-        uint8_t data[] = { (y0 >> 8) & 0xFF, y0 & 0xFF, (y1 >> 8) & 0xFF, y1 & 0xFF };
-        ILI9341_WriteData(data, sizeof(data));
-    }
-
-    // write to RAM
-    ILI9341_WriteCommand(0x2C); // RAMWR
+void ili9341_calibrate_scalar(ili9341_t *lcd,
+    uint16_t min_x, uint16_t min_y, uint16_t max_x, uint16_t max_y)
+{
+  if (NULL == lcd)
+    { return; }
 }
 
-static void ILI9341_WriteCommandWithData(uint8_t cmd, const uint8_t *data, size_t len) {
-    ILI9341_WriteCommand(cmd);
-    if (len > 0 && data != NULL) {
-        ILI9341_WriteData((uint8_t *)data, len);
-    }
+void ili9341_spi_tft_select(ili9341_t *lcd)
+{
+  // clear bit indicates the TFT is -active- slave SPI device
+  HAL_GPIO_WritePin(lcd->tft_select_port, lcd->tft_select_pin, __GPIO_PIN_CLR__);
 }
 
-static void ILI9341_WriteU8(uint8_t cmd, uint8_t value) {
-    ILI9341_WriteCommand(cmd);
-    ILI9341_WriteData(&value, 1);
+void ili9341_spi_tft_release(ili9341_t *lcd)
+{
+  // set bit indicates the TFT is -inactive- slave SPI device
+  HAL_GPIO_WritePin(lcd->tft_select_port, lcd->tft_select_pin, __GPIO_PIN_SET__);
 }
 
-void ILI9341_Init() {
-    ILI9341_Select();
-    ILI9341_Reset();
-
-    ILI9341_WriteCommand(0x01); // SWRESET
-    HAL_Delay(150);
-
-    {
-        static const uint8_t data[] = {0x39, 0x2C, 0x00, 0x34, 0x02};
-        ILI9341_WriteCommandWithData(0xCB, data, sizeof(data));
-    }
-    {
-        static const uint8_t data[] = {0x00, 0xC1, 0x30};
-        ILI9341_WriteCommandWithData(0xCF, data, sizeof(data));
-    }
-    {
-        static const uint8_t data[] = {0x85, 0x00, 0x78};
-        ILI9341_WriteCommandWithData(0xE8, data, sizeof(data));
-    }
-    {
-        static const uint8_t data[] = {0x00, 0x00};
-        ILI9341_WriteCommandWithData(0xEA, data, sizeof(data));
-    }
-    {
-        static const uint8_t data[] = {0x64, 0x03, 0x12, 0x81};
-        ILI9341_WriteCommandWithData(0xED, data, sizeof(data));
-    }
-    ILI9341_WriteU8(0xF7, 0x20);
-    ILI9341_WriteU8(0xC0, 0x23);
-    ILI9341_WriteU8(0xC1, 0x10);
-
-    {
-        static const uint8_t data[] = {0x3E, 0x28};
-        ILI9341_WriteCommandWithData(0xC5, data, sizeof(data));
-    }
-    ILI9341_WriteU8(0xC7, 0x86);
-
-    ILI9341_WriteU8(0x3A, 0x55); // 16-bit
-
-    {
-        static const uint8_t data[] = {0x00, 0x18};
-        ILI9341_WriteCommandWithData(0xB1, data, sizeof(data));
-    }
-    {
-        static const uint8_t data[] = {0x08, 0x82, 0x27};
-        ILI9341_WriteCommandWithData(0xB6, data, sizeof(data));
-    }
-
-    ILI9341_WriteU8(0xF2, 0x00);
-    ILI9341_WriteU8(0x26, 0x01);
-
-    {
-        static const uint8_t data[] = {
-            0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1,
-            0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00
-        };
-        ILI9341_WriteCommandWithData(0xE0, data, sizeof(data));
-    }
-    {
-        static const uint8_t data[] = {
-            0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1,
-            0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F
-        };
-        ILI9341_WriteCommandWithData(0xE1, data, sizeof(data));
-    }
-
-    ILI9341_WriteU8(0x36, ILI9341_ROTATION); // only once
-    ILI9341_WriteCommand(0x11);              // SLPOUT
-    HAL_Delay(120);
-    ILI9341_WriteCommand(0x29);              // DISPON
-
-    ILI9341_Unselect();
+void ili9341_spi_slave_select(ili9341_t *lcd,
+    ili9341_spi_slave_t spi_slave)
+{
+  switch (spi_slave) {
+    case issDisplayTFT:  ili9341_spi_tft_select(lcd);   break;
+    default: break;
+  }
 }
 
-void ILI9341_DrawPixel(uint16_t x, uint16_t y, uint16_t color) {
-    if((x >= ILI9341_WIDTH) || (y >= ILI9341_HEIGHT))
-        return;
+void ili9341_spi_slave_release(ili9341_t *lcd,
+    ili9341_spi_slave_t spi_slave)
+{
+  switch (spi_slave) {
 
-    ILI9341_Select();
-
-    ILI9341_SetAddressWindow(x, y, x, y);
-    uint8_t data[] = { color >> 8, color & 0xFF };
-    ILI9341_WriteData(data, sizeof(data));
-
-    ILI9341_Unselect();
+    case issDisplayTFT:  ili9341_spi_tft_release(lcd);   break;
+    default: break;
+  }
 }
 
-static void ILI9341_WriteChar(uint16_t x, uint16_t y, char ch, FontDef font, uint16_t color, uint16_t bgcolor) {
-    uint32_t i, b, j;
+void ili9341_spi_write_command(ili9341_t *lcd,
+    ili9341_spi_slave_t spi_slave, uint8_t command)
+{
+  __SLAVE_SELECT(lcd, spi_slave);
 
-    ILI9341_SetAddressWindow(x, y, x+font.width-1, y+font.height-1);
+  HAL_GPIO_WritePin(lcd->data_command_port, lcd->data_command_pin, __GPIO_PIN_CLR__);
+  HAL_SPI_Transmit(lcd->spi_hal, &command, sizeof(command), __SPI_MAX_DELAY__);
 
-    for(i = 0; i < font.height; i++) {
-        b = font.data[(ch - 32) * font.height + i];
-        for(j = 0; j < font.width; j++) {
-            if((b << j) & 0x8000)  {
-                uint8_t data[] = { color >> 8, color & 0xFF };
-                ILI9341_WriteData(data, sizeof(data));
-            } else {
-                uint8_t data[] = { bgcolor >> 8, bgcolor & 0xFF };
-                ILI9341_WriteData(data, sizeof(data));
-            }
-        }
-    }
+  __SLAVE_RELEASE(lcd, spi_slave);
 }
 
-void ILI9341_WriteString(uint16_t x, uint16_t y, const char* str, FontDef font, uint16_t color, uint16_t bgcolor) {
-    ILI9341_Select();
+void ili9341_spi_write_data(ili9341_t *lcd,
+    ili9341_spi_slave_t spi_slave, uint16_t data_sz, uint8_t data[])
+{
+  __SLAVE_SELECT(lcd, spi_slave);
 
-    while(*str) {
-        if(x + font.width >= ILI9341_WIDTH) {
-            x = 0;
-            y += font.height;
-            if(y + font.height >= ILI9341_HEIGHT) {
-                break;
-            }
+  HAL_GPIO_WritePin(lcd->data_command_port, lcd->data_command_pin, __GPIO_PIN_SET__);
+  HAL_SPI_Transmit(lcd->spi_hal, data, data_sz, __SPI_MAX_DELAY__);
 
-            if(*str == ' ') {
-                // skip spaces in the beginning of the new line
-                str++;
-                continue;
-            }
-        }
-
-        ILI9341_WriteChar(x, y, *str, font, color, bgcolor);
-        x += font.width;
-        str++;
-    }
-
-    ILI9341_Unselect();
+  __SLAVE_RELEASE(lcd, spi_slave);
 }
 
-void ILI9341_FillRectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color) {
-    if ((x >= ILI9341_WIDTH) || (y >= ILI9341_HEIGHT)) return;
-    if ((x + w - 1) >= ILI9341_WIDTH)  w = ILI9341_WIDTH - x;
-    if ((y + h - 1) >= ILI9341_HEIGHT) h = ILI9341_HEIGHT - y;
+void ili9341_spi_write_data_read(ili9341_t *lcd,
+    ili9341_spi_slave_t spi_slave,
+    uint16_t data_sz, uint8_t tx_data[], uint8_t rx_data[])
+{
+  __SLAVE_SELECT(lcd, spi_slave);
 
-    ILI9341_Select();
-    ILI9341_SetAddressWindow(x, y, x + w - 1, y + h - 1);
+  HAL_GPIO_WritePin(lcd->data_command_port, lcd->data_command_pin, __GPIO_PIN_SET__);
+  HAL_SPI_TransmitReceive(lcd->spi_hal, tx_data, rx_data, data_sz, __SPI_MAX_DELAY__);
 
-    uint8_t line[64 * 2];
-    for (uint16_t i = 0; i < 64; i++) {
-        line[2 * i]     = color >> 8;
-        line[2 * i + 1] = color & 0xFF;
-    }
-
-    for (uint16_t row = 0; row < h; row++) {
-        uint16_t remaining = w;
-        while (remaining > 0) {
-            uint16_t chunk_pixels = (remaining > 64) ? 64 : remaining;
-            ILI9341_WriteData(line, chunk_pixels * 2);
-            remaining -= chunk_pixels;
-        }
-    }
-
-    ILI9341_Unselect();
+  __SLAVE_RELEASE(lcd, spi_slave);
 }
 
-void ILI9341_FillScreen(uint16_t color) {
-    ILI9341_FillRectangle(0, 0, ILI9341_WIDTH, ILI9341_HEIGHT, color);
+void ili9341_spi_write_command_data(ili9341_t *lcd,
+    ili9341_spi_slave_t spi_slave, uint8_t command, uint16_t data_sz, uint8_t data[])
+{
+  __SLAVE_SELECT(lcd, spi_slave);
+
+  ili9341_spi_write_command(lcd, issNONE, command);
+  ili9341_spi_write_data(lcd, issNONE, data_sz, data);
+
+  __SLAVE_RELEASE(lcd, spi_slave);
 }
 
-void ILI9341_DrawImage(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_t* data) {
-    if((x >= ILI9341_WIDTH) || (y >= ILI9341_HEIGHT)) return;
-    if((x + w - 1) >= ILI9341_WIDTH) return;
-    if((y + h - 1) >= ILI9341_HEIGHT) return;
+// -------------------------------------------------------- private functions --
 
-    ILI9341_Select();
-    ILI9341_SetAddressWindow(x, y, x+w-1, y+h-1);
-    ILI9341_WriteData((uint8_t*)data, sizeof(uint16_t)*w*h);
-    ILI9341_Unselect();
+static void ili9341_reset(ili9341_t *lcd)
+{
+  // the reset pin on ILI9341 is active low, so driving low temporarily will
+  // reset the device (also resets the touch screen peripheral)
+  HAL_GPIO_WritePin(lcd->reset_port, lcd->reset_pin, __GPIO_PIN_CLR__);
+  HAL_Delay(200);
+  HAL_GPIO_WritePin(lcd->reset_port, lcd->reset_pin, __GPIO_PIN_SET__);
+
+  // ensure both slave lines are open
+  ili9341_spi_tft_release(lcd);
 }
 
-void ILI9341_InvertColors(bool invert) {
-    ILI9341_Select();
-    ILI9341_WriteCommand(invert ? 0x21 /* INVON */ : 0x20 /* INVOFF */);
-    ILI9341_Unselect();
+static void ili9341_initialize(ili9341_t *lcd)
+{
+  ili9341_reset(lcd);
+  ili9341_spi_tft_select(lcd);
+
+  // command list is based on https://github.com/martnak/STM32-ILI9341
+
+  // SOFTWARE RESET
+  ili9341_spi_write_command(lcd, issNONE, 0x01);
+  HAL_Delay(1000);
+
+  // POWER CONTROL A
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xCB, 5, (uint8_t[]){ 0x39, 0x2C, 0x00, 0x34, 0x02 });
+
+  // POWER CONTROL B
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xCF, 3, (uint8_t[]){ 0x00, 0xC1, 0x30 });
+
+  // DRIVER TIMING CONTROL A
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xE8, 3, (uint8_t[]){ 0x85, 0x00, 0x78 });
+
+  // DRIVER TIMING CONTROL B
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xEA, 2, (uint8_t[]){ 0x00, 0x00 });
+
+  // POWER ON SEQUENCE CONTROL
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xED, 4, (uint8_t[]){ 0x64, 0x03, 0x12, 0x81 });
+
+  // PUMP RATIO CONTROL
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xF7, 1, (uint8_t[]){ 0x20 });
+
+  // POWER CONTROL,VRH[5:0]
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xC0, 1, (uint8_t[]){ 0x23 });
+
+  // POWER CONTROL,SAP[2:0];BT[3:0]
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xC1, 1, (uint8_t[]){ 0x10 });
+
+  // VCM CONTROL
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xC5, 2, (uint8_t[]){ 0x3E, 0x28 });
+
+  // VCM CONTROL 2
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xC7, 1, (uint8_t[]){ 0x86 });
+
+  // MEMORY ACCESS CONTROL
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0x36, 1, (uint8_t[]){ 0x48 });
+
+  // PIXEL FORMAT
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0x3A, 1, (uint8_t[]){ 0x55 });
+
+  // FRAME RATIO CONTROL, STANDARD RGB COLOR
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xB1, 2, (uint8_t[]){ 0x00, 0x18 });
+
+  // DISPLAY FUNCTION CONTROL
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xB6, 3, (uint8_t[]){ 0x08, 0x82, 0x27 });
+
+  // 3GAMMA FUNCTION DISABLE
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xF2, 1, (uint8_t[]){ 0x00 });
+
+  // GAMMA CURVE SELECTED
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0x26, 1, (uint8_t[]){ 0x01 });
+
+  // POSITIVE GAMMA CORRECTION
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xE0, 15, (uint8_t[]){ 0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1,
+                             0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00 });
+
+  // NEGATIVE GAMMA CORRECTION
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0xE1, 15, (uint8_t[]){ 0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1,
+                             0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F });
+
+  // EXIT SLEEP
+  ili9341_spi_write_command(lcd, issNONE, 0x11);
+  HAL_Delay(120);
+
+  // TURN ON DISPLAY
+  ili9341_spi_write_command(lcd, issNONE, 0x29);
+
+  // MADCTL
+  ili9341_spi_write_command_data(lcd, issNONE,
+      0x36, 1, (uint8_t[]){ ili9341_screen_rotation(lcd->orientation) });
+
+  ili9341_spi_tft_release(lcd);
 }
+
+static ili9341_two_dimension_t ili9341_screen_size(
+    ili9341_screen_orientation_t orientation)
+{
+  switch (orientation) {
+    default:
+    case isoDown:
+      return (ili9341_two_dimension_t){ { .width = 240U }, { .height = 320U } };
+    case isoRight:
+      return (ili9341_two_dimension_t){ { .width = 320U }, { .height = 240U } };
+    case isoUp:
+      return (ili9341_two_dimension_t){ { .width = 240U }, { .height = 320U } };
+    case isoLeft:
+      return (ili9341_two_dimension_t){ { .width = 320U }, { .height = 240U } };
+  }
+}
+
+static uint8_t ili9341_screen_rotation(
+    ili9341_screen_orientation_t orientation)
+{
+  switch (orientation) {
+    default:
+    case isoDown:
+      return 0x40 | 0x08;
+    case isoRight:
+      return 0x40 | 0x80 | 0x20 | 0x08;
+    case isoUp:
+      return 0x80 | 0x08;
+    case isoLeft:
+      return 0x20 | 0x08;
+  }
+}
+
+ili9341_two_dimension_t ili9341_clip_touch_coordinate(ili9341_two_dimension_t coord,
+    ili9341_two_dimension_t min, ili9341_two_dimension_t max)
+{
+  if (coord.x < min.x) { coord.x = min.x; }
+  if (coord.x > max.x) { coord.x = max.x; }
+  if (coord.y < min.y) { coord.y = min.y; }
+  if (coord.y > max.y) { coord.y = max.y; }
+
+  return coord;
+}
+

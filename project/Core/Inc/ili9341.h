@@ -1,81 +1,123 @@
-/* vim: set ai et ts=4 sw=4: */
-#ifndef __ILI9341_H__
-#define __ILI9341_H__
+#ifndef __ILI9341_H
+#define __ILI9341_H
 
-#include "fonts.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "stm32f4xx_hal.h"
 #include "main.h"
 #include "spi.h"
 #include "gpio.h"
-#include <stdbool.h>
 
-#define ILI9341_MADCTL_MY  0x80
-#define ILI9341_MADCTL_MX  0x40
-#define ILI9341_MADCTL_MV  0x20
-#define ILI9341_MADCTL_ML  0x10
-#define ILI9341_MADCTL_RGB 0x00
-#define ILI9341_MADCTL_BGR 0x08
-#define ILI9341_MADCTL_MH  0x04
+#define __GPIO_PIN_CLR__ GPIO_PIN_RESET
+#define __GPIO_PIN_SET__ GPIO_PIN_SET
+#define __SPI_MAX_DELAY__ HAL_MAX_DELAY
+#define __SPI_TX_BLOCK_MAX__ (1U * 1024U)
 
-/*** Redefine if necessary ***/
-#define ILI9341_SPI_PORT hspi1
+#define __MSBYTEu16(u) (uint8_t)(((uint16_t)(u) >> 8U) & 0xFF)
+#define __LSBYTEu16(u) (uint8_t)(((uint16_t)(u)) & 0xFF)
+#define ibOK(v)   ((v) == ibTrue)
+#define ibNOT(v)  ((v) != ibTrue)
 
-#define ILI9341_CS_Pin        CS_Pin
-#define ILI9341_CS_GPIO_Port  CS_GPIO_Port
+static inline uint16_t __LEu16(const uint16_t *v) {
+    uint16_t x = *v;
+    return (uint16_t)((x >> 8) | (x << 8));
+}
 
-#define ILI9341_DC_Pin        DC_Pin
-#define ILI9341_DC_GPIO_Port  DC_GPIO_Port
+typedef struct ili9341 ili9341_t;
 
-#define ILI9341_RST_Pin       RESET_Pin
-#define ILI9341_RST_GPIO_Port RESET_GPIO_Port
+typedef enum {
+  ibFalse = 0,
+  ibNo = ibFalse,
+  ibTrue = 1,
+  ibYes = ibTrue,
+} ili9341_bool_t;
 
-// default orientation
-//#define ILI9341_WIDTH  320
-//#define ILI9341_HEIGHT 240
-//#define ILI9341_ROTATION (ILI9341_MADCTL_BGR)
+typedef struct {
+  union { uint16_t x; uint16_t width; };
+  union { uint16_t y; uint16_t height; };
+} ili9341_two_dimension_t;
 
-// rotate right
+typedef enum {
+  isoNONE = -1,
+  isoDown,
+  isoPortrait = isoDown,
+  isoRight,
+  isoLandscape = isoRight,
+  isoUp,
+  isoPortraitFlip = isoUp,
+  isoLeft,
+  isoLandscapeFlip = isoLeft,
+  isoCOUNT
+} ili9341_screen_orientation_t;
 
-#define ILI9341_WIDTH  320
-#define ILI9341_HEIGHT 240
-#define ILI9341_ROTATION (ILI9341_MADCTL_MX | ILI9341_MADCTL_MV | ILI9341_MADCTL_BGR)
+typedef enum {
+  itsNONE = -1,
+  itsNotSupported,
+  itsSupported,
+  itsCOUNT
+} ili9341_touch_support_t;
 
+typedef enum {
+  itnNONE = -1,
+  itnNotNormalized,
+  itnNormalized,
+  itnCOUNT
+} ili9341_touch_normalize_t;
 
-// rotate left
-/*
-#define ILI9341_WIDTH  320
-#define ILI9341_HEIGHT 240
-#define ILI9341_ROTATION (ILI9341_MADCTL_MV | ILI9341_MADCTL_BGR)
-*/
+typedef enum {
+  issNONE = -1,
+  issDisplayTFT,
+  issTouchScreen,
+  issCOUNT
+} ili9341_spi_slave_t;
 
-// upside down
-/*
-#define ILI9341_WIDTH  240
-#define ILI9341_HEIGHT 320
-#define ILI9341_ROTATION (ILI9341_MADCTL_MY | ILI9341_MADCTL_BGR)
-*/
+typedef HAL_StatusTypeDef ili9341_status_t;
 
-/****************************/
+struct ili9341 {
+  SPI_HandleTypeDef *spi_hal;
+  GPIO_TypeDef *reset_port;
+  uint16_t reset_pin;
+  GPIO_TypeDef *tft_select_port;
+  uint16_t tft_select_pin;
+  GPIO_TypeDef *data_command_port;
+  uint16_t data_command_pin;
+  ili9341_screen_orientation_t orientation;
+  ili9341_two_dimension_t screen_size;
 
-// Color definitions
-#define	ILI9341_BLACK   0x0000
-#define	ILI9341_BLUE    0x001F
-#define	ILI9341_RED     0xF800
-#define	ILI9341_GREEN   0x07E0
-#define ILI9341_CYAN    0x07FF
-#define ILI9341_MAGENTA 0xF81F
-#define ILI9341_YELLOW  0xFFE0
-#define ILI9341_WHITE   0xFFFF
-#define ILI9341_COLOR565(r, g, b) (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | ((b & 0xF8) >> 3))
+  GPIO_TypeDef *touch_select_port;
+  uint16_t touch_select_pin;
+  GPIO_TypeDef *touch_irq_port;
+  uint16_t touch_irq_pin;
+  ili9341_touch_support_t touch_support;
+  ili9341_touch_normalize_t touch_normalize;
+};
 
-// call before initializing any SPI devices
-void ILI9341_Unselect();
+ili9341_t *ili9341_new(
+    SPI_HandleTypeDef *spi_hal,
+    GPIO_TypeDef *reset_port,
+    uint16_t reset_pin,
+    GPIO_TypeDef *tft_select_port,
+    uint16_t tft_select_pin,
+    GPIO_TypeDef *data_command_port,
+    uint16_t data_command_pin,
+    ili9341_screen_orientation_t orientation,
+    GPIO_TypeDef *touch_select_port,
+    uint16_t touch_select_pin,
+    GPIO_TypeDef *touch_irq_port,
+    uint16_t touch_irq_pin,
+    ili9341_touch_support_t touch_support,
+    ili9341_touch_normalize_t touch_normalize);
 
-void ILI9341_Init(void);
-void ILI9341_DrawPixel(uint16_t x, uint16_t y, uint16_t color);
-void ILI9341_WriteString(uint16_t x, uint16_t y, const char* str, FontDef font, uint16_t color, uint16_t bgcolor);
-void ILI9341_FillRectangle(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
-void ILI9341_FillScreen(uint16_t color);
-void ILI9341_DrawImage(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_t* data);
-void ILI9341_InvertColors(bool invert);
+void ili9341_spi_tft_select(ili9341_t *lcd);
+void ili9341_spi_tft_release(ili9341_t *lcd);
+void ili9341_spi_write_command(ili9341_t *lcd, ili9341_spi_slave_t spi_slave, uint8_t command);
+void ili9341_spi_write_data(ili9341_t *lcd, ili9341_spi_slave_t spi_slave, uint16_t data_sz, uint8_t data[]);
+void ili9341_spi_write_command_data(ili9341_t *lcd, ili9341_spi_slave_t spi_slave, uint8_t command, uint16_t data_sz, uint8_t data[]);
 
-#endif // __ILI9341_H__
+#ifdef __cplusplus
+}
+#endif
+
+#endif

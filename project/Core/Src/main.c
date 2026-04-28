@@ -41,7 +41,7 @@
 #include "bmp180.h"
 #include "ili9341.h"
 #include "fonts.h"
-#include "st7735.h"
+#include "ili9341_gfx.h"
 
 
 /* USER CODE END Includes */
@@ -70,6 +70,8 @@ PUTCHAR_PROTOTYPE {
     HAL_UART_Transmit(&huart3, (uint8_t *)&ch, 1, 50);
     return ch;
 }
+
+ili9341_t *lcd = NULL;
 
 /* USER CODE END PV */
 
@@ -152,19 +154,26 @@ int main(void)
   /* USER CODE BEGIN WHILE */
 //  printf("ILI9341 init\r\n");
 
-    ILI9341_Init();
+  lcd = ili9341_new(
+          &hspi1,
+          RESET_GPIO_Port, RESET_Pin,
+          CS_GPIO_Port, CS_Pin,
+          DC_GPIO_Port, DC_Pin,
+          isoPortrait,
+          NULL, 0,
+          NULL, 0,
+          itsNotSupported,
+          itnNotNormalized
+      );
 
-    ILI9341_FillScreen(ILI9341_WHITE);
+  // simple fill test using low-level commands
+	  ili9341_fill_screen(lcd, ILI9341_WHITE);
+	  ili9341_fill_rect(lcd, ILI9341_RED,   0,   0,   10, 10);
+	  ili9341_fill_rect(lcd, ILI9341_GREEN, 230, 0,   10, 10);
+	  ili9341_fill_rect(lcd, ILI9341_BLUE,  0,   310, 10, 10);
+	  ili9341_fill_rect(lcd, ILI9341_BLACK, 230, 310, 10, 10);
 
-    ILI9341_DrawPixel(0, 0, ILI9341_RED);
-    ILI9341_DrawPixel(239, 0, ILI9341_GREEN);
-    ILI9341_DrawPixel(0, 319, ILI9341_BLUE);
-    ILI9341_DrawPixel(239, 319, ILI9341_BLACK);
-
-    ILI9341_FillRectangle(10, 10, 40, 40, ILI9341_RED);
-    ILI9341_FillRectangle(60, 10, 40, 40, ILI9341_GREEN);
-    ILI9341_FillRectangle(110, 10, 40, 40, ILI9341_BLUE);
-
+     printf("after draw\r\n");
   while (1)
   {
 	  MX_LWIP_Process();
